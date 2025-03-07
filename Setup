@@ -287,3 +287,6 @@ sudo apt upgrade -y
 
 clear
 rm SetupGXT
+
+# Garantir que SetupOrion seja executado
+bash ./SetupOrion
