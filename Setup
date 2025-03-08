@@ -265,12 +265,12 @@ if [ -e "SetupGXT" ]; then
 fi
 
 # Baixa o script
-curl -sSL https://raw.githubusercontent.com/GXTdesign2015/SetupGXT/main/SetupGXT -o SetupGXT
+curl -sSL https://raw.githubusercontent.com/guxtarodrigues/SetupGXT/main/SetupOrion -o SetupGXT
 if [ $? -eq 0 ]; then
     echo "13/13 - [ OK ] - Baixando o script"
     # Executa o script baixado
-    chmod +x SetupGXT
-    ./SetupGXT
+    chmod +x SetupOrion
+    ./SetupOrion
 else
     echo "13/13 - [ OFF ] - Baixando o script"
     echo "Encerrando o setup"
