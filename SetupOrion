@@ -22379,7 +22379,7 @@ version: "3.7"
 services:
 
   outline:
-    image: guxtarodrigues/outline-custom:latest
+    image: x8marketing/outline-custom:latest
     volumes:
       - outline_data:/var/lib/outline/data
     networks:
