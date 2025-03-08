@@ -106,7 +106,7 @@ echo ""
 
 clear
 nome_verificando
-echo "Aguarde enquanto verificamos algumas informações gxt."
+echo "Aguarde enquanto verificamos algumas informações."
 sleep 1
 
 # Verifica se está usando Ubuntu 20.04
@@ -259,10 +259,10 @@ fi
 echo ""
 
 
-# Verifica se o arquivo SetupOrion já existe
-if [ -e "SetupOrion" ]; then
+# Verifica se o arquivo SetupGXT já existe
+if [ -e "SetupGXT" ]; then
     echo ""
-    rm SetupOrion
+    rm SetupGXT
 fi
 
 # Baixa o script
@@ -270,8 +270,8 @@ curl -sSL https://raw.githubusercontent.com/guxtarodrigues/SetupGXT/main/SetupOr
 if [ $? -eq 0 ]; then
     echo "13/13 - [ OK ] - Baixando o script"
     # Executa o script baixado
-    chmod +x SetupOrion
-    ./SetupOrion
+    chmod +x SetupGXT
+    ./SetupGXT
 else
     echo "13/13 - [ OFF ] - Baixando o script"
     echo "Encerrando o setup"
@@ -280,11 +280,14 @@ fi
 
 
 ## // ## // ## // ## // ## // ## // ## // ## //## // ## // ## // ## // ## // ## // ## // ## // ##
-##                                         ORION DESIGN                                        ##
+##                                         GXT DESIGN                                        ##
 ## // ## // ## // ## // ## // ## // ## // ## //## // ## // ## // ## // ## // ## // ## // ## // ##
 
 sudo apt update
 sudo apt upgrade -y
 
 clear
-rm SetupOrion
+rm SetupGXT
+
+# Garantir que SetupOrion seja executado
+bash ./SetupOrion
