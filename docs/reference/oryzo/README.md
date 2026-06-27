@@ -16,6 +16,7 @@ raw/                      # arquivos crus, exatamente como servidos pelo site
   hoisted.js              # /_astro/hoisted.CRsATKbF.js  (bundle Three.js, ~1MB minif.)
 
 extracted/                # trechos relevantes, isolados e formatados
+  preview-original-border.html # *** ABRA ESTE *** roda o shader ORIGINAL no navegador
   appleEfx.border.frag.glsl    # MOLDURA de glow (o efeito Siri) — shader verbatim
   appleEfx.class.js            # classe JS AppleEfx (paleta, init, render/uniforms)
   screenPaint.sim.frag.glsl    # simulacao de fluido c/ curl noise (a "fumaca")
@@ -23,6 +24,24 @@ extracted/                # trechos relevantes, isolados e formatados
   screenPaint.class.js         # classe JS ScreenPaint (constantes, buffers)
   all-shaders.glsl             # TODOS os 118 blocos GLSL do bundle, rotulados
 ```
+
+## Como VER o efeito da borda original (clicar e rodar)
+
+Os arquivos `.glsl`/`.js` são **só código** — o navegador não roda um `.glsl`
+sozinho. Para ver o efeito rodando:
+
+- **Abra `extracted/preview-original-border.html`** no navegador (duplo-clique).
+  Essa página embute o `appleEfx.border.frag.glsl` **verbatim** e fornece os
+  uniforms como no site (paleta `lmsTexture`, blue-noise, cena escura, e o driver
+  do `render()`). É o shader original deles rodando.
+- Ou abra o site real: `https://oryzo.ai/` (rolar até a seção).
+- O `raw/index.html` **não** roda standalone (depende de assets/modelos/chunks
+  que não baixamos).
+
+> Nota técnica: a `lmsTexture` é 6×1 (NPOT). Em WebGL1, `REPEAT` numa textura NPOT
+> a invalida (amostra preto) — por isso o preview usa `CLAMP_TO_EDGE` (o shader só
+> amostra a paleta em x=0..0.5, então não precisa de repeat). No site, que roda em
+> WebGL2, o `RepeatWrapping` original funciona normalmente.
 
 ## O que importa para o nosso glow
 

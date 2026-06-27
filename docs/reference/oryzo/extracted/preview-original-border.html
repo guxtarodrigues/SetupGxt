@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Preview — shader ORIGINAL da borda (oryzo.ai / AppleEfx)</title>
+<style>
+  html,body{margin:0;height:100%;background:#100904;overflow:hidden;font-family:system-ui,sans-serif;color:#ffedd7}
+  #c{display:block;width:100vw;height:100vh}
+  .tag{position:fixed;left:14px;bottom:12px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;opacity:.5;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="tag">shader verbatim: appleEfx.border.frag.glsl</div>
+<!--
+  Roda o fragmentShader$3 (AppleEfx) EXATAMENTE como extraido do bundle do oryzo.
+  So foram expandidos os #include (getBlueNoise, linearstep) com o codigo real.
+  Uniforms fornecidos como no AppleEfx.class.js: lmsTexture (paleta 6x1),
+  blue-noise, cena escura em u_texture, e o driver do render() (pulse, coverAspect...).
+  Basta abrir este arquivo no navegador.
+-->
+<script id="frag" type="x-shader/x-fragment">
+#define GLSLIFY 1
+precision highp float;
+uniform sampler2D u_texture;uniform float u_padding;uniform vec2 u_resolution;uniform vec2 u_coverAspect;uniform float u_time;uniform float u_amount;uniform float u_pulse;uniform vec2 u_pulseCenter;uniform sampler2D u_lmsTexture;varying vec2 v_uv;uniform sampler2D u_blueNoiseTexture;uniform vec2 u_blueNoiseTexelSize;uniform vec2 u_blueNoiseCoordOffset;
+vec3 getBlueNoise(vec2 coord){return texture2D(u_blueNoiseTexture,coord*u_blueNoiseTexelSize+u_blueNoiseCoordOffset).rgb;}
+float sdBox(in vec2 p,in vec2 b){vec2 d=abs(p)-b;return length(max(d,0.0))+min(max(d.x,d.y),0.0);}float sdCircle(vec2 p,float r){return length(p)-r;}float opSmoothUnion(float a,float b,float k){k*=4.0;float h=max(k-abs(a-b),0.0);return min(a,b)-h*h*0.25/k;}const float PI=3.14159265359;
+float linearstep(float a,float b,float x){return clamp((x-a)/(b-a),0.,1.);}
+void main(){vec3 bnoise=getBlueNoise(gl_FragCoord.xy);vec2 aspect=vec2(u_resolution.x/u_resolution.y,1.);vec2 glowUv=(v_uv-0.5)*u_coverAspect*2.;float angle=u_time*-5.;mat2 rot=mat2(cos(angle),-sin(angle),sin(angle),cos(angle));glowUv=rot*glowUv;glowUv=glowUv*.5+.5;glowUv=clamp(glowUv,vec2(0.),vec2(1.));vec3 c0=texture2D(u_lmsTexture,vec2(0.,.5)).rgb;vec3 c1=texture2D(u_lmsTexture,vec2(1./6.,.5)).rgb;vec3 c2=texture2D(u_lmsTexture,vec2(2./6.,.5)).rgb;vec3 c3=texture2D(u_lmsTexture,vec2(3./6.,.5)).rgb;vec3 colorT=mix(c0,c1,glowUv.x);vec3 colorB=mix(c3,c2,glowUv.x);vec3 glowColor=mix(colorB,colorT,glowUv.y);glowColor*=glowColor*glowColor*2.;vec2 wp=(v_uv-u_pulseCenter)*aspect;float wl=length(aspect);float wpl=wl-length(wp);float wsl=0.5*wl;float wel=0.5*wl;float wtl=wl+wsl+wel;float wt=u_pulse*wtl-wl+wpl;float w0=smoothstep(0.,wsl,wt);float w1=smoothstep(wsl+wel,wsl,wt);float wd=abs(wt-wsl);float wave=w0*w1*u_amount;vec2 waveDir=normalize(wp);vec2 borderUv=(v_uv-0.5)*u_resolution+waveDir*wave*0.01*u_resolution.x;float d=sdBox(borderUv,u_resolution*0.5-u_padding*2.)-u_padding;d=linearstep(0.0,u_padding*2.5,d);float test=d;d=pow(d,3.0);float d2=sdBox(borderUv,u_resolution*0.5-u_padding*3.)-u_padding*1.5;d2=linearstep(0.0,u_padding*5.5,d2);test+=d2;d2=pow(d2,5.);vec4 base=texture2D(u_texture,v_uv+waveDir*smoothstep(0.,0.4,abs(wd))*wave*-0.005);vec3 color=pow(base.rgb,vec3(2.2));float glow=(0.001+d+d2*0.5)*5.;color+=u_amount*glowColor*glow;color+=wave*(d*0.25+d2*0.25+glowColor*0.05);color=min(color,1.);glow=dot(glowColor,vec3(0.2126,0.7152,0.0722))*glow;gl_FragColor=vec4(pow(color,vec3(1.0/2.2))+bnoise*0.004,min(1.,base.a+glow+wave*(d+d2*0.5+0.05)));}
+</script>
+<script>
+const cv=document.getElementById("c");
+const gl=cv.getContext("webgl",{antialias:false,alpha:false});
+const floatExt=gl.getExtension("OES_texture_float");
+
+const VERT=`attribute vec2 p;varying vec2 v_uv;void main(){v_uv=p*0.5+0.5;gl_Position=vec4(p,0.,1.);}`;
+const FRAG=document.getElementById("frag").textContent;
+
+function sh(t,s){const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);
+  if(!gl.getShaderParameter(o,gl.COMPILE_STATUS))console.error(gl.getShaderInfoLog(o));return o;}
+const prog=gl.createProgram();
+gl.attachShader(prog,sh(gl.VERTEX_SHADER,VERT));
+gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FRAG));
+gl.linkProgram(prog);gl.useProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS))console.error(gl.getProgramInfoLog(prog));
+
+const buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+const loc=gl.getAttribLocation(prog,"p");gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+const U=n=>gl.getUniformLocation(prog,n);
+
+// paleta real (sRGB -> linear), igual AppleEfx.colors
+const lin=h=>{const v=parseInt(h.slice(1),16);return [((v>>16)&255)/255,((v>>8)&255)/255,(v&255)/255]
+  .map(c=>c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4));};
+const C=[lin("#ff9cff"),lin("#ff9638"),lin("#ffff22"),lin("#54ffff")];
+const avg=[0,1,2].map(k=>(C[0][k]+C[1][k]+C[2][k]+C[3][k])/4);
+// lmsTexture 6x1 RGBA (UNSIGNED_BYTE): c0,c1,c2,c3,c0,avg  (cores lineares cabem em [0,1])
+const lms=new Uint8Array(6*4);
+[C[0],C[1],C[2],C[3],C[0],avg].forEach((c,i)=>{lms[i*4]=Math.round(c[0]*255);lms[i*4+1]=Math.round(c[1]*255);lms[i*4+2]=Math.round(c[2]*255);lms[i*4+3]=255;});
+const lmsTex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,lmsTex);
+gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,6,1,0,gl.RGBA,gl.UNSIGNED_BYTE,lms);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+// 6x1 e NPOT: em WebGL1 REPEAT invalida a textura (amostra preto). So amostramos
+// em x=0..0.5, entao CLAMP_TO_EDGE resolve.
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+
+// blue-noise 64x64 (aleatorio) REPEAT
+const N=64,bn=new Uint8Array(N*N*4);for(let i=0;i<bn.length;i++)bn[i]=Math.floor(Math.random()*256);
+const bnTex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,bnTex);
+gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,N,N,0,gl.RGBA,gl.UNSIGNED_BYTE,bn);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.REPEAT);
+
+// cena escura em u_texture (no site aqui vai a cena 3D renderizada)
+const sc=new Uint8Array([16,9,4,255]);
+const scTex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,scTex);
+gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,sc);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+
+gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,scTex);gl.uniform1i(U("u_texture"),0);
+gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,lmsTex);gl.uniform1i(U("u_lmsTexture"),1);
+gl.activeTexture(gl.TEXTURE2);gl.bindTexture(gl.TEXTURE_2D,bnTex);gl.uniform1i(U("u_blueNoiseTexture"),2);
+gl.uniform2f(U("u_blueNoiseTexelSize"),1/N,1/N);
+gl.uniform1f(U("u_amount"),1.0);
+
+function coverAspect(){const W=cv.width,H=cv.height;const i=Math.min(H/W,1)/Math.sqrt(W*W+H*H)*Math.max(W,H);return [W/H*i,i];}
+function resize(){const dpr=Math.min(devicePixelRatio||1,2);cv.width=Math.floor(innerWidth*dpr);cv.height=Math.floor(innerHeight*dpr);
+  gl.viewport(0,0,cv.width,cv.height);gl.uniform2f(U("u_resolution"),cv.width,cv.height);
+  const ca=coverAspect();gl.uniform2f(U("u_coverAspect"),ca[0],ca[1]);
+  gl.uniform1f(U("u_padding"),Math.min(50,Math.min(cv.width,cv.height)*0.1));}
+addEventListener("resize",resize);resize();
+
+const PULSE_PERIOD=6.0;const t0=performance.now()/1000;
+(function loop(now){now=now/1000;const t=now-t0;
+  gl.uniform1f(U("u_time"),t);
+  gl.uniform2f(U("u_blueNoiseCoordOffset"),Math.random(),Math.random());
+  let pulse=1;if(PULSE_PERIOD>0){pulse=Math.min(1,(t%PULSE_PERIOD)*0.5);}
+  gl.uniform1f(U("u_pulse"),pulse);
+  gl.uniform2f(U("u_pulseCenter"),1.001,0.5);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  requestAnimationFrame(loop);})(performance.now());
+</script>
+</body>
+</html>
