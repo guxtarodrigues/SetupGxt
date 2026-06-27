@@ -217,12 +217,16 @@ Sem WebGL não dá pra ter o "fluxo" idêntico, mas dá pra **aproximar em CSS**
 @property --a{syntax:'<angle>';inherits:false;initial-value:0deg}
 ```
 
-> Um demo **WebGL2 fiel** acompanha este doc em `docs/demos/siri-edge-glow.html`
-> — reproduz os DOIS sistemas (moldura `AppleEfx` + fumaça `ScreenPaint` com curl
-> noise, distorção e rgb shift), com as constantes reais do bundle. Pipeline por
-> frame: `low → paintSim(curl) → scene → distort → border`. Abra no navegador e
-> mexa o mouse para a fumaça invadir (tem autoplay quando ocioso). Verificado
-> renderizando localmente.
+> Demo em `docs/demos/siri-edge-glow.html`: usa o **shader `AppleEfx` verbatim**
+> (a moldura de glow arco-íris), sobre fundo escuro, **sem fumaça e sem mouse**.
+> A "rotação que deixa a borda mais forte onde passa e avança pro centro" é a
+> paleta amostrada por uma UV rotacionada (`u_time*-5`) + a cor elevada ao cubo
+> (`col*col*col`): onde a cor é brilhante, o glow intensifica e alcança mais pra
+> dentro. O `u_pulse` (onda da borda direita) empurra o SDF pro centro — no demo
+> ele varre em loop só para demonstrar esse avanço. Verificado por render local.
+>
+> A fumaça do `ScreenPaint` (seção 2.5) foi **removida do demo a pedido**; a
+> documentação dela permanece como referência de como o site faz.
 
 ---
 
