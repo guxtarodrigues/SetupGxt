@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="pt-br"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Efeito completo — AppleEfx + Bloom + Final (oryzo.ai)</title>
+<style>html,body{margin:0;height:100%;background:#0b0603;overflow:hidden;font-family:system-ui,sans-serif;color:#ffedd7}
+#c{display:block;width:100vw;height:100vh}
+.tag{position:fixed;left:14px;bottom:12px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;opacity:.5;pointer-events:none}</style>
+</head><body>
+<canvas id="c"></canvas>
+<div class="tag">pipeline original: glow(AppleEfx) -> bloom -> final(vignette)</div>
+<!--
+  Roda o EFEITO COMPLETO da borda do oryzo com a cadeia de pos-processamento que
+  envolve o glow no site (a parte que define a "qualidade"):
+    cena escura -> AppleEfx (shader VERBATIM) -> Bloom -> Final (saturacao/contraste/vignette/dither)
+  Shaders de glow/bloom/final = logica extraida do bundle (blocks 55/51/53).
+  100% procedural: NENHUM asset de arte do site. Abrir no navegador.
+-->
+
+<script id="glow" type="x-shader/x-fragment">
+#define GLSLIFY 1
+precision highp float;
+uniform sampler2D u_texture;uniform float u_padding;uniform vec2 u_resolution;uniform vec2 u_coverAspect;uniform float u_time;uniform float u_amount;uniform float u_pulse;uniform vec2 u_pulseCenter;uniform sampler2D u_lmsTexture;varying vec2 v_uv;uniform sampler2D u_blueNoiseTexture;uniform vec2 u_blueNoiseTexelSize;uniform vec2 u_blueNoiseCoordOffset;
+vec3 getBlueNoise(vec2 coord){return texture2D(u_blueNoiseTexture,coord*u_blueNoiseTexelSize+u_blueNoiseCoordOffset).rgb;}
+float sdBox(in vec2 p,in vec2 b){vec2 d=abs(p)-b;return length(max(d,0.0))+min(max(d.x,d.y),0.0);}float sdCircle(vec2 p,float r){return length(p)-r;}float opSmoothUnion(float a,float b,float k){k*=4.0;float h=max(k-abs(a-b),0.0);return min(a,b)-h*h*0.25/k;}const float PI=3.14159265359;
+float linearstep(float a,float b,float x){return clamp((x-a)/(b-a),0.,1.);}
+void main(){vec3 bnoise=getBlueNoise(gl_FragCoord.xy);vec2 aspect=vec2(u_resolution.x/u_resolution.y,1.);vec2 glowUv=(v_uv-0.5)*u_coverAspect*2.;float angle=u_time*-5.;mat2 rot=mat2(cos(angle),-sin(angle),sin(angle),cos(angle));glowUv=rot*glowUv;glowUv=glowUv*.5+.5;glowUv=clamp(glowUv,vec2(0.),vec2(1.));vec3 c0=texture2D(u_lmsTexture,vec2(0.,.5)).rgb;vec3 c1=texture2D(u_lmsTexture,vec2(1./6.,.5)).rgb;vec3 c2=texture2D(u_lmsTexture,vec2(2./6.,.5)).rgb;vec3 c3=texture2D(u_lmsTexture,vec2(3./6.,.5)).rgb;vec3 colorT=mix(c0,c1,glowUv.x);vec3 colorB=mix(c3,c2,glowUv.x);vec3 glowColor=mix(colorB,colorT,glowUv.y);glowColor*=glowColor*glowColor*2.;vec2 wp=(v_uv-u_pulseCenter)*aspect;float wl=length(aspect);float wpl=wl-length(wp);float wsl=0.5*wl;float wel=0.5*wl;float wtl=wl+wsl+wel;float wt=u_pulse*wtl-wl+wpl;float w0=smoothstep(0.,wsl,wt);float w1=smoothstep(wsl+wel,wsl,wt);float wd=abs(wt-wsl);float wave=w0*w1*u_amount;vec2 waveDir=normalize(wp);vec2 borderUv=(v_uv-0.5)*u_resolution+waveDir*wave*0.01*u_resolution.x;float d=sdBox(borderUv,u_resolution*0.5-u_padding*2.)-u_padding;d=linearstep(0.0,u_padding*2.5,d);float test=d;d=pow(d,3.0);float d2=sdBox(borderUv,u_resolution*0.5-u_padding*3.)-u_padding*1.5;d2=linearstep(0.0,u_padding*5.5,d2);test+=d2;d2=pow(d2,5.);vec4 base=texture2D(u_texture,v_uv+waveDir*smoothstep(0.,0.4,abs(wd))*wave*-0.005);vec3 color=pow(base.rgb,vec3(2.2));float glow=(0.001+d+d2*0.5)*5.;color+=u_amount*glowColor*glow;color+=wave*(d*0.25+d2*0.25+glowColor*0.05);color=min(color,1.);glow=dot(glowColor,vec3(0.2126,0.7152,0.0722))*glow;gl_FragColor=vec4(pow(color,vec3(1.0/2.2))+bnoise*0.004,min(1.,base.a+glow+wave*(d+d2*0.5+0.05)));}
+</script>
+
+<script id="blur" type="x-shader/x-fragment">
+precision highp float; varying vec2 v_uv; uniform sampler2D u_tex; uniform vec2 u_dir;
+void main(){ vec4 s=texture2D(u_tex,v_uv)*0.227027;
+  s+=texture2D(u_tex,v_uv+u_dir*1.3846)*0.316216; s+=texture2D(u_tex,v_uv-u_dir*1.3846)*0.316216;
+  s+=texture2D(u_tex,v_uv+u_dir*3.2308)*0.070270; s+=texture2D(u_tex,v_uv-u_dir*3.2308)*0.070270;
+  gl_FragColor=s; }
+</script>
+
+<script id="final" type="x-shader/x-fragment">
+precision highp float; varying vec2 v_uv;
+uniform sampler2D u_texture, u_bloomTexture;
+uniform float u_saturation;            // saturacao do bloom (block 51)
+uniform float u_fSaturation,u_contrast,u_brightness;
+uniform vec2 u_vignetteAspect; uniform float u_vignetteFrom,u_vignetteTo; uniform vec3 u_vignetteColor;
+float hash13(vec3 p3){p3=fract(p3*.1031);p3+=dot(p3,p3.yzx+33.33);return fract((p3.x+p3.y)*p3.z);}
+void main(){
+  vec4 color=texture2D(u_texture,v_uv);
+  vec3 bloomColor=texture2D(u_bloomTexture,v_uv).rgb;           // block 51: composita bloom
+  float bluma=dot(bloomColor,vec3(0.299,0.587,0.114));
+  color.rgb+=mix(vec3(bluma),bloomColor,u_saturation)*0.38;
+  vec3 c=pow(color.rgb,vec3(2.2));                              // block 53: -> linear
+  float luma=dot(c,vec3(0.299,0.587,0.114));
+  c=mix(vec3(luma),c,1.0+u_fSaturation);
+  c=clamp(0.5+(1.0+u_contrast)*(c-0.5),0.,1.);
+  c+=u_brightness;
+  float d=length((v_uv-0.5)*u_vignetteAspect)*2.0;
+  c=mix(c,u_vignetteColor,smoothstep(u_vignetteFrom,u_vignetteTo,d));
+  gl_FragColor=vec4(min(vec3(1.),pow(c,vec3(1.0/2.2))+hash13(vec3(gl_FragCoord.xy,1.0))/255.0),1.0);
+}
+</script>
+
+<script id="scene" type="x-shader/x-fragment">
+precision highp float; varying vec2 v_uv;
+void main(){ vec3 bg=vec3(0.043,0.025,0.012); bg+=0.006*vec3(1.,0.6,0.3)*(1.-length(v_uv-0.5)); gl_FragColor=vec4(bg,1.); }
+</script>
+
+<script id="vert" type="x-shader/x-vertex">
+attribute vec2 p; varying vec2 v_uv; void main(){ v_uv=p*0.5+0.5; gl_Position=vec4(p,0.,1.); }
+</script>
+
+<script>
+const cv=document.getElementById("c");
+const gl=cv.getContext("webgl2",{antialias:false,alpha:false}) || cv.getContext("webgl",{antialias:false,alpha:false});
+const VS=document.getElementById("vert").textContent;
+function P(fid){const p=gl.createProgram();
+  function s(t,src){const o=gl.createShader(t);gl.shaderSource(o,src);gl.compileShader(o);
+    if(!gl.getShaderParameter(o,gl.COMPILE_STATUS))console.error(fid,gl.getShaderInfoLog(o));return o;}
+  gl.attachShader(p,s(gl.VERTEX_SHADER,VS));
+  gl.attachShader(p,s(gl.FRAGMENT_SHADER,document.getElementById(fid).textContent));
+  gl.linkProgram(p); if(!gl.getProgramParameter(p,gl.LINK_STATUS))console.error(fid,gl.getProgramInfoLog(p));
+  p._u={};const n=gl.getProgramParameter(p,gl.ACTIVE_UNIFORMS);
+  for(let i=0;i<n;i++){const u=gl.getActiveUniform(p,i);p._u[u.name]=gl.getUniformLocation(p,u.name);} return p;}
+const progGlow=P("glow"),progBlur=P("blur"),progFinal=P("final"),progScene=P("scene");
+
+const quad=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,quad);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+function bindQuad(p){const l=gl.getAttribLocation(p,"p");gl.bindBuffer(gl.ARRAY_BUFFER,quad);gl.enableVertexAttribArray(l);gl.vertexAttribPointer(l,2,gl.FLOAT,false,0,0);}
+function RT(w,h){const t=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,w,h,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  const f=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,f);gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,t,0);return {t,f,w,h};}
+
+// paleta real (sRGB->linear) -> lmsTexture 6x1 (CLAMP por causa de NPOT)
+const lin=h=>{const v=parseInt(h.slice(1),16);return [((v>>16)&255)/255,((v>>8)&255)/255,(v&255)/255].map(c=>c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4));};
+const Cs=[lin("#ff9cff"),lin("#ff9638"),lin("#ffff22"),lin("#54ffff")];
+const avg=[0,1,2].map(k=>(Cs[0][k]+Cs[1][k]+Cs[2][k]+Cs[3][k])/4);
+const lmsArr=new Uint8Array(24);[Cs[0],Cs[1],Cs[2],Cs[3],Cs[0],avg].forEach((c,i)=>{lmsArr[i*4]=c[0]*255;lmsArr[i*4+1]=c[1]*255;lmsArr[i*4+2]=c[2]*255;lmsArr[i*4+3]=255;});
+const lmsTex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,lmsTex);
+gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,6,1,0,gl.RGBA,gl.UNSIGNED_BYTE,lmsArr);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+// blue-noise 64x64 REPEAT
+const N=64,bn=new Uint8Array(N*N*4);for(let i=0;i<bn.length;i++)bn[i]=Math.random()*256|0;
+const bnTex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,bnTex);
+gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,N,N,0,gl.RGBA,gl.UNSIGNED_BYTE,bn);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.REPEAT);
+
+let sceneRT,glowRT,b1,b2,W,H;
+function coverAspect(){const i=Math.min(H/W,1)/Math.sqrt(W*W+H*H)*Math.max(W,H);return [W/H*i,i];}
+function resize(){const dpr=Math.min(devicePixelRatio||1,2);W=cv.width=innerWidth*dpr|0;H=cv.height=innerHeight*dpr|0;
+  sceneRT=RT(W,H);glowRT=RT(W,H);const bw=W>>1,bh=H>>1;b1=RT(bw,bh);b2=RT(bw,bh);}
+addEventListener("resize",resize);resize();
+
+function pass(p,target,setup){gl.useProgram(p);bindQuad(p);
+  if(target){gl.bindFramebuffer(gl.FRAMEBUFFER,target.f);gl.viewport(0,0,target.w,target.h);}else{gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,W,H);}
+  let unit=0;const tx=(name,tex)=>{gl.activeTexture(gl.TEXTURE0+unit);gl.bindTexture(gl.TEXTURE_2D,tex);gl.uniform1i(p._u[name],unit);unit++;};
+  setup&&setup(p,tx);gl.drawArrays(gl.TRIANGLES,0,3);}
+
+const PULSE_PERIOD=6.0;const t0=performance.now()/1000;
+(function loop(now){now/=1000;const t=now-t0;const ca=coverAspect();
+  // 1) cena escura
+  pass(progScene,sceneRT);
+  // 2) glow (AppleEfx verbatim)
+  let pulse=Math.min(1,(t%PULSE_PERIOD)*0.5);
+  pass(progGlow,glowRT,(p,tx)=>{tx("u_texture",sceneRT.t);tx("u_lmsTexture",lmsTex);tx("u_blueNoiseTexture",bnTex);
+    gl.uniform2f(p._u["u_blueNoiseTexelSize"],1/N,1/N);gl.uniform2f(p._u["u_blueNoiseCoordOffset"],Math.random(),Math.random());
+    gl.uniform2f(p._u["u_resolution"],W,H);gl.uniform2f(p._u["u_coverAspect"],ca[0],ca[1]);
+    gl.uniform1f(p._u["u_time"],t);gl.uniform1f(p._u["u_amount"],1);gl.uniform1f(p._u["u_pulse"],pulse);
+    gl.uniform2f(p._u["u_pulseCenter"],1.001,0.5);gl.uniform1f(p._u["u_padding"],Math.min(50,Math.min(W,H)*0.1));});
+  // 3) bloom: downsample(glow)->blur H->blur V (em meia resolucao)
+  pass(progBlur,b1,(p,tx)=>{tx("u_tex",glowRT.t);gl.uniform2f(p._u["u_dir"],1/(W>>1),0);});
+  pass(progBlur,b2,(p,tx)=>{tx("u_tex",b1.t);gl.uniform2f(p._u["u_dir"],0,1/(H>>1));});
+  pass(progBlur,b1,(p,tx)=>{tx("u_tex",b2.t);gl.uniform2f(p._u["u_dir"],2.5/(W>>1),0);});
+  pass(progBlur,b2,(p,tx)=>{tx("u_tex",b1.t);gl.uniform2f(p._u["u_dir"],0,2.5/(H>>1));});
+  // 4) final: glow + bloom + vignette
+  pass(progFinal,null,(p,tx)=>{tx("u_texture",glowRT.t);tx("u_bloomTexture",b2.t);
+    gl.uniform1f(p._u["u_saturation"],1.0);gl.uniform1f(p._u["u_fSaturation"],0.05);
+    gl.uniform1f(p._u["u_contrast"],0.06);gl.uniform1f(p._u["u_brightness"],0.0);
+    gl.uniform2f(p._u["u_vignetteAspect"],1.0,1.0);gl.uniform1f(p._u["u_vignetteFrom"],0.6);gl.uniform1f(p._u["u_vignetteTo"],1.6);
+    gl.uniform3f(p._u["u_vignetteColor"],0,0,0);});
+  requestAnimationFrame(loop);})(performance.now());
+</script>
+</body></html>

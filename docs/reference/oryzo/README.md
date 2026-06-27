@@ -16,7 +16,8 @@ raw/                      # arquivos crus, exatamente como servidos pelo site
   hoisted.js              # /_astro/hoisted.CRsATKbF.js  (bundle Three.js, ~1MB minif.)
 
 extracted/                # trechos relevantes, isolados e formatados
-  preview-original-border.html # *** ABRA ESTE *** roda o shader ORIGINAL no navegador
+  complete-effect.html         # *** EFEITO COMPLETO *** glow + bloom + vignette (pipeline real)
+  preview-original-border.html # so o glow (shader AppleEfx isolado)
   appleEfx.border.frag.glsl    # MOLDURA de glow (o efeito Siri) — shader verbatim
   appleEfx.class.js            # classe JS AppleEfx (paleta, init, render/uniforms)
   screenPaint.sim.frag.glsl    # simulacao de fluido c/ curl noise (a "fumaca")
@@ -24,6 +25,22 @@ extracted/                # trechos relevantes, isolados e formatados
   screenPaint.class.js         # classe JS ScreenPaint (constantes, buffers)
   all-shaders.glsl             # TODOS os 118 blocos GLSL do bundle, rotulados
 ```
+
+## Pipeline de pós-processamento do site (o que define a "qualidade")
+
+Ordem real dos passes no bundle (`addQueue`):
+
+```
+TAA → FXAA → SMAA → Bokeh(DOF) → AppleEfx(glow) → PostLayer → Bloom(+lens dirt)
+   → BlurBox → ScreenPaintDistortion(fumaça) → Final(saturação/contraste/vignette/dither)
+```
+
+> Por isso o glow isolado nunca bate com o site: no site ele é seguido de **Bloom**
+> (halo suave) e do **Final** (vignette + grade de cor + dither). O
+> `complete-effect.html` reproduz essa cadeia (glow → bloom → final), que é a parte
+> que falta pra chegar no nível. Tudo isso é técnica/shader — extraído dos blocks
+> 55 (glow), 51 (bloom composite) e 53 (final). Parâmetros default do bundle:
+> `bloomSaturation=1`, `vignetteFrom≈0.6`, `vignetteTo≈1.6`, `toneMappingExposure=1`.
 
 ## Como VER o efeito da borda original (clicar e rodar)
 
