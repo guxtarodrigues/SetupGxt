@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Siri Edge Glow — reprodução (oryzo.ai)</title>
+<style>
+  html,body{margin:0;height:100%;background:#100904;overflow:hidden;
+    font-family:system-ui,sans-serif;color:#ffedd7}
+  #c{display:block;width:100vw;height:100vh}
+  .hint{position:fixed;left:50%;bottom:6%;transform:translateX(-50%);
+    letter-spacing:.15em;text-transform:uppercase;font-size:12px;opacity:.6;
+    pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">mexa o mouse · clique para o pulse</div>
+
+<!-- Reprodução fiel do AppleEfx do oryzo.ai: SDF de borda + paleta rotacionada
+     + pulse reativo, num único fragment shader fullscreen (WebGL puro). -->
+<script>
+const cv = document.getElementById('c');
+const gl = cv.getContext('webgl', {antialias:false, alpha:false});
+
+const vert = `
+attribute vec2 p; varying vec2 v_uv;
+void main(){ v_uv = p*0.5+0.5; gl_Position = vec4(p,0.,1.); }`;
+
+// Paleta real do oryzo: #ff9cff #ff9638 #ffff22 #54ffff
+const frag = `
+precision highp float;
+varying vec2 v_uv;
+uniform vec2  u_resolution;
+uniform float u_time;
+uniform float u_padding;
+uniform float u_amount;
+uniform float u_pulse;        // 0..1 progresso da onda
+uniform vec2  u_pulseCenter;  // em uv
+uniform vec3 c0,c1,c2,c3;
+
+float sdBox(vec2 p, vec2 b){ vec2 d=abs(p)-b; return length(max(d,0.))+min(max(d.x,d.y),0.); }
+float linstep(float a,float b,float x){ return clamp((x-a)/(b-a),0.,1.); }
+
+void main(){
+  vec2 res = u_resolution;
+  vec2 aspect = vec2(res.x/res.y, 1.);
+
+  // --- cor que flui: UV da paleta rotacionada pelo tempo ---
+  vec2 glowUv = (v_uv-0.5)*aspect*2.;
+  float a = u_time*-0.6;
+  mat2 rot = mat2(cos(a),-sin(a),sin(a),cos(a));
+  glowUv = clamp(rot*glowUv*0.5+0.5, 0., 1.);
+  vec3 cT = mix(c0,c1,glowUv.x);
+  vec3 cB = mix(c3,c2,glowUv.x);
+  vec3 glowColor = mix(cB,cT,glowUv.y);
+  glowColor *= glowColor*glowColor*2.;
+
+  // --- onda/pulse radial ---
+  vec2 wp = (v_uv-u_pulseCenter)*aspect;
+  float wl=length(aspect), wpl=wl-length(wp);
+  float wsl=0.5*wl, wel=0.5*wl, wtl=wl+wsl+wel;
+  float wt=u_pulse*wtl-wl+wpl;
+  float wave=smoothstep(0.,wsl,wt)*smoothstep(wsl+wel,wsl,wt);
+  vec2 waveDir=normalize(wp+1e-5);
+
+  // --- SDF da moldura (acompanha a tela via u_resolution) ---
+  vec2 borderUv=(v_uv-0.5)*res + waveDir*wave*0.01*res.x;
+  float d=sdBox(borderUv, res*0.5-u_padding*2.)-u_padding;
+  d=linstep(0., u_padding*2.5, d); d=pow(d,3.);
+  float d2=sdBox(borderUv, res*0.5-u_padding*3.)-u_padding*1.5;
+  d2=linstep(0., u_padding*5.5, d2); d2=pow(d2,5.);
+
+  // --- composição sobre fundo escuro ---
+  vec3 bg=vec3(0.063,0.035,0.016);
+  float glow=(0.001+d+d2*0.5)*5.;
+  vec3 color=bg + (u_amount*glowColor*glow) + wave*(d*0.25+d2*0.25+glowColor*0.05);
+  color=min(color,1.);
+  // dither simples p/ evitar banding
+  float n=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453);
+  gl_FragColor=vec4(color + (n-0.5)*0.01, 1.);
+}`;
+
+function sh(t,s){const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);
+  if(!gl.getShaderParameter(o,gl.COMPILE_STATUS))console.error(gl.getShaderInfoLog(o));return o;}
+const prog=gl.createProgram();
+gl.attachShader(prog,sh(gl.VERTEX_SHADER,vert));
+gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,frag));
+gl.linkProgram(prog); gl.useProgram(prog);
+
+const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+const loc=gl.getAttribLocation(prog,'p'); gl.enableVertexAttribArray(loc);
+gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+
+const U=n=>gl.getUniformLocation(prog,n);
+const srgb=h=>{const v=parseInt(h.slice(1),16);return [((v>>16)&255)/255,((v>>8)&255)/255,(v&255)/255]
+  .map(c=>c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4));};
+gl.uniform3fv(U('c0'),srgb('#ff9cff'));
+gl.uniform3fv(U('c1'),srgb('#ff9638'));
+gl.uniform3fv(U('c2'),srgb('#ffff22'));
+gl.uniform3fv(U('c3'),srgb('#54ffff'));
+
+let pulse=1, pulseCenter=[0.5,0.5], amount=1;
+function resize(){
+  const dpr=Math.min(devicePixelRatio,2);
+  cv.width=innerWidth*dpr; cv.height=innerHeight*dpr;
+  gl.viewport(0,0,cv.width,cv.height);
+  gl.uniform2f(U('u_resolution'),cv.width,cv.height);          // <- adapta à tela
+  gl.uniform1f(U('u_padding'),Math.min(cv.width,cv.height)*0.10);
+}
+addEventListener('resize',resize); resize();
+
+addEventListener('pointermove',e=>{ pulseCenter=[e.clientX/innerWidth, 1-e.clientY/innerHeight]; });
+addEventListener('pointerdown',()=>{ pulse=0; });  // dispara a onda
+
+const t0=performance.now();
+(function loop(t){
+  gl.uniform1f(U('u_time'),(t-t0)/1000);
+  pulse=Math.min(1,pulse+0.012);
+  gl.uniform1f(U('u_pulse'),pulse);
+  gl.uniform2f(U('u_pulseCenter'),pulseCenter[0],pulseCenter[1]);
+  gl.uniform1f(U('u_amount'),amount);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  requestAnimationFrame(loop);
+})(t0);
+</script>
+</body>
+</html>
