@@ -10,6 +10,12 @@ Engenharia reversa do efeito de **glow animado nas bordas da tela** de
 > o glow laranja do *thumbnail* de vídeo; o glow multicolor de tela inteira é
 > outro mecanismo, em shader.
 
+> **São DOIS sistemas combinados** (revisão após análise detalhada):
+> 1. **`AppleEfx`** — a moldura de glow arco-íris (SDF de borda + paleta girando).
+> 2. **`ScreenPaint`** — uma **simulação de fluido/tinta em GPU com curl noise**
+>    que gera as "partículas esfumaçadas" que invadem a tela quando há
+>    movimento. É isso que dá o aspecto de fumaça que se espalha.
+
 ---
 
 ## 1. Como está montado
@@ -57,6 +63,11 @@ Como o SDF usa `u_resolution`, a moldura **acompanha qualquer tamanho de tela**.
 para um gradiente bilinear. A coordenada de amostragem é **rotacionada pelo tempo**
 (`angle = u_time * -5.`), então as cores giram/escorrem pela borda.
 
+> ⚠️ **Velocidade:** `u_time` é acumulado em **segundos**
+> (`sharedUniforms.u_time.value += deltaTime`), então `-5.` significa **~5 rad/s**
+> — bem rápido. Se sua reprodução parecer lenta, é porque o `u_time` está
+> escalado errado (era o caso da 1ª versão deste demo).
+
 ```glsl
 vec2 glowUv = (v_uv - 0.5) * u_coverAspect * 2.0;
 float angle = u_time * -5.0;
@@ -98,7 +109,72 @@ gl_FragColor = vec4(pow(color, vec3(1.0/2.2)) + blueNoise*0.004, ...); // gamma 
 ```
 O **blue-noise dithering** (`+ bnoise*0.004`) evita banding no degradê suave.
 
+### Parâmetros exatos do `AppleEfx.render()` (para pixel-perfect)
+```js
+this.pulse += deltaTime * 0.5;                       // varre em ~2 s
+this.pulse  = saturate(this.pulse);
+u_pulse       = this.pulse;
+u_pulseCenter = (1.001, 1 - scrollBarCenter);        // nasce na BORDA DIREITA (ligado ao scroll, NÃO ao mouse)
+u_amount      = ease.sineIn(this.amount);            // easing sineIn
+u_padding     = min(50, min(width,height) * 0.1);    // px, capado em 50
+// coverAspect normalizado (não é só w/h):
+let i = min(h/w,1) / sqrt(w*w+h*h) * max(w,h);
+u_coverAspect = (w/h * i, i);
+u_resolution  = (width, height);                     // atualizado no resize
+```
+
 ---
+
+## 2.5. A fumaça que invade — `ScreenPaint` (simulação de fluido)
+
+Aquele "esfumaçado com partículas que invade quando mexe" **não** está no shader
+da borda. É uma **simulação de tinta/fluido em GPU** (`class ScreenPaint`), com
+**curl noise**, rodando em render targets de baixa resolução em ping-pong.
+
+### Buffers (resolução)
+- `paint`  = **¼** da tela (`width>>2, height>>2`) — RGBA8, dados do fluido.
+- `low`    = **1/16** da tela (`width>>4`) — versão borrada, realimenta o campo.
+- Canais do dado: `.xy` = velocidade (centrada em 0.5), `.z/.w` = densidade/peso.
+- Limpo para `(.5,.5,0,0)`.
+
+### Constantes (literais do bundle)
+```js
+pushStrength=25; velocityDissipation=.985; weight1Dissipation=.985;
+weight2Dissipation=.75; accelerationDissipation=.8;
+useNoise=true; curlScale=.06; curlStrength=1.75;
+minRadius=0; maxRadius=100; radiusDistanceRange=100;
+```
+
+### Pass de advecção + injeção + curl (o que faz a fumaça)
+Um "pincel" (segmento `drawFrom→drawTo`, em px, vindo do movimento) injeta
+velocidade e densidade; o curl noise (gradient noise com derivadas analíticas)
+desvia o fluxo criando as volutas; tudo é advectado e dissipado a cada frame:
+```glsl
+vec2 velInv = (0.5 - lowData.xy) * u_pushStrength;          // empurra pelo campo
+vec3 n3 = noised(fc*u_curlScale*(1.0-lowData.xy));          // curl noise (2 oitavas)
+vec2 n  = noised(fc*u_curlScale*(2.0-lowData.xy*(0.5+n3.x)+n3.yz*0.1)).yz;
+velInv += n*(lowData.z+lowData.w)*u_curlStrength;           // mais denso = mais turbulência
+vec4 data = texture2D(u_prevPaintTexture, v_uv + velInv*u_paintTexelSize); // advecção
+// ... dissipação (u_dissipations) + injeção do pincel (u_vel*d, peso) ...
+```
+
+### Pass de distorção (como a fumaça aparece na tela)
+A tela renderizada é **borrada ao longo do fluxo** (9 amostras) e ganha
+**RGB shift** nas zonas de movimento — é o que lê como "partículas esfumaçadas":
+```glsl
+vec2 vel = (0.5 - data.xy - 0.001) * 2.0 * weight;
+vec2 velocity = vel * u_amount/4.0 * u_screenPaintTexelSize * u_multiplier;
+vec2 uv = v_uv + blueNoise.xy*velocity; vec4 color=vec4(0.);
+for(int i=0;i<9;i++){ color += texture2D(u_texture, uv); uv += velocity; } color/=9.;
+color.rgb += sin(vec3(vel.x+vel.y)*40. + vec3(0,2,4)*u_rgbShift) * ... ; // franja cromática
+```
+Além disso, vários elementos de UI/halo (`blocos 88/100/107`) **modulam a própria
+opacidade pela densidade do paint** (`screenPaint.z + screenPaint.w`) — por isso
+"aparece mais coisa" conforme a fumaça invade.
+
+> **Resumo da diferença que você sentiu:** o glow gira rápido (`u_time*-5`,
+> segundos) e a "invasão esfumaçada" é a simulação `ScreenPaint` (curl noise +
+> smear + rgb shift), não um simples noise no shader da borda.
 
 ## 3. O gatilho por scroll (o "frame" que você mencionou)
 
@@ -141,7 +217,12 @@ Sem WebGL não dá pra ter o "fluxo" idêntico, mas dá pra **aproximar em CSS**
 @property --a{syntax:'<angle>';inherits:false;initial-value:0deg}
 ```
 
-> Um demo WebGL fiel acompanha este doc em `docs/demos/siri-edge-glow.html`.
+> Um demo **WebGL2 fiel** acompanha este doc em `docs/demos/siri-edge-glow.html`
+> — reproduz os DOIS sistemas (moldura `AppleEfx` + fumaça `ScreenPaint` com curl
+> noise, distorção e rgb shift), com as constantes reais do bundle. Pipeline por
+> frame: `low → paintSim(curl) → scene → distort → border`. Abra no navegador e
+> mexa o mouse para a fumaça invadir (tem autoplay quando ocioso). Verificado
+> renderizando localmente.
 
 ---
 

@@ -3,127 +3,278 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Siri Edge Glow — reprodução (oryzo.ai)</title>
+<title>Siri Edge Glow + Smoke — reprodução fiel (oryzo.ai)</title>
 <style>
   html,body{margin:0;height:100%;background:#100904;overflow:hidden;
     font-family:system-ui,sans-serif;color:#ffedd7}
   #c{display:block;width:100vw;height:100vh}
   .hint{position:fixed;left:50%;bottom:6%;transform:translateX(-50%);
-    letter-spacing:.15em;text-transform:uppercase;font-size:12px;opacity:.6;
+    letter-spacing:.15em;text-transform:uppercase;font-size:12px;opacity:.55;
     pointer-events:none}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div class="hint">mexa o mouse · clique para o pulse</div>
+<div class="hint">mexa o mouse para a fumaça invadir</div>
 
-<!-- Reprodução fiel do AppleEfx do oryzo.ai: SDF de borda + paleta rotacionada
-     + pulse reativo, num único fragment shader fullscreen (WebGL puro). -->
+<!--
+  Reprodução FIEL do efeito do oryzo.ai (classe AppleEfx + ScreenPaint).
+  Pipeline por frame (mesma ordem do original):
+    1) low      : downsample/blur do paint -> campo de velocidade suave
+    2) paintSim : advecção + injeção (pincel) + CURL NOISE + dissipação  (shader frag$g)
+    3) scene    : fundo escuro + "tinta" colorida (paleta rotacionada)
+    4) distort  : smear de 9 taps ao longo do fluxo + RGB shift           (screenPaintDistortion)
+    5) border   : glow de borda via SDF + paleta rotacionada + pulse      (AppleEfx fragmentShader$3)
+  Constantes e GLSL extraídos do bundle _astro/hoisted.CRsATKbF.js.
+-->
 <script>
 const cv = document.getElementById('c');
-const gl = cv.getContext('webgl', {antialias:false, alpha:false});
+const gl = cv.getContext('webgl2', {antialias:false, alpha:false});
+if(!gl){ document.body.innerHTML='<p style="padding:2rem">WebGL2 indisponível.</p>'; }
 
-const vert = `
-attribute vec2 p; varying vec2 v_uv;
+// ---------- helpers ----------
+const VERT = `#version 300 es
+in vec2 p; out vec2 v_uv;
 void main(){ v_uv = p*0.5+0.5; gl_Position = vec4(p,0.,1.); }`;
 
-// Paleta real do oryzo: #ff9cff #ff9638 #ffff22 #54ffff
-const frag = `
-precision highp float;
-varying vec2 v_uv;
-uniform vec2  u_resolution;
-uniform float u_time;
-uniform float u_padding;
-uniform float u_amount;
-uniform float u_pulse;        // 0..1 progresso da onda
-uniform vec2  u_pulseCenter;  // em uv
-uniform vec3 c0,c1,c2,c3;
-
-float sdBox(vec2 p, vec2 b){ vec2 d=abs(p)-b; return length(max(d,0.))+min(max(d.x,d.y),0.); }
-float linstep(float a,float b,float x){ return clamp((x-a)/(b-a),0.,1.); }
-
-void main(){
-  vec2 res = u_resolution;
-  vec2 aspect = vec2(res.x/res.y, 1.);
-
-  // --- cor que flui: UV da paleta rotacionada pelo tempo ---
-  vec2 glowUv = (v_uv-0.5)*aspect*2.;
-  float a = u_time*-0.6;
-  mat2 rot = mat2(cos(a),-sin(a),sin(a),cos(a));
-  glowUv = clamp(rot*glowUv*0.5+0.5, 0., 1.);
-  vec3 cT = mix(c0,c1,glowUv.x);
-  vec3 cB = mix(c3,c2,glowUv.x);
-  vec3 glowColor = mix(cB,cT,glowUv.y);
-  glowColor *= glowColor*glowColor*2.;
-
-  // --- onda/pulse radial ---
-  vec2 wp = (v_uv-u_pulseCenter)*aspect;
-  float wl=length(aspect), wpl=wl-length(wp);
-  float wsl=0.5*wl, wel=0.5*wl, wtl=wl+wsl+wel;
-  float wt=u_pulse*wtl-wl+wpl;
-  float wave=smoothstep(0.,wsl,wt)*smoothstep(wsl+wel,wsl,wt);
-  vec2 waveDir=normalize(wp+1e-5);
-
-  // --- SDF da moldura (acompanha a tela via u_resolution) ---
-  vec2 borderUv=(v_uv-0.5)*res + waveDir*wave*0.01*res.x;
-  float d=sdBox(borderUv, res*0.5-u_padding*2.)-u_padding;
-  d=linstep(0., u_padding*2.5, d); d=pow(d,3.);
-  float d2=sdBox(borderUv, res*0.5-u_padding*3.)-u_padding*1.5;
-  d2=linstep(0., u_padding*5.5, d2); d2=pow(d2,5.);
-
-  // --- composição sobre fundo escuro ---
-  vec3 bg=vec3(0.063,0.035,0.016);
-  float glow=(0.001+d+d2*0.5)*5.;
-  vec3 color=bg + (u_amount*glowColor*glow) + wave*(d*0.25+d2*0.25+glowColor*0.05);
-  color=min(color,1.);
-  // dither simples p/ evitar banding
-  float n=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453);
-  gl_FragColor=vec4(color + (n-0.5)*0.01, 1.);
-}`;
-
-function sh(t,s){const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);
-  if(!gl.getShaderParameter(o,gl.COMPILE_STATUS))console.error(gl.getShaderInfoLog(o));return o;}
-const prog=gl.createProgram();
-gl.attachShader(prog,sh(gl.VERTEX_SHADER,vert));
-gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,frag));
-gl.linkProgram(prog); gl.useProgram(prog);
-
-const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+function prog(fs){
+  function sh(t,s){const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);
+    if(!gl.getShaderParameter(o,gl.COMPILE_STATUS))console.error(gl.getShaderInfoLog(o),s);return o;}
+  const p=gl.createProgram();
+  gl.attachShader(p,sh(gl.VERTEX_SHADER,VERT));
+  gl.attachShader(p,sh(gl.FRAGMENT_SHADER,'#version 300 es\nprecision highp float;\n'+fs));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS))console.error(gl.getProgramInfoLog(p));
+  p._u={}; const n=gl.getProgramParameter(p,gl.ACTIVE_UNIFORMS);
+  for(let i=0;i<n;i++){const info=gl.getActiveUniform(p,i);p._u[info.name.replace('[0]','')]=gl.getUniformLocation(p,info.name);}
+  return p;
+}
+const quad=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,quad);
 gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
-const loc=gl.getAttribLocation(prog,'p'); gl.enableVertexAttribArray(loc);
-gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+function bindQuad(p){const l=gl.getAttribLocation(p,'p');gl.bindBuffer(gl.ARRAY_BUFFER,quad);
+  gl.enableVertexAttribArray(l);gl.vertexAttribPointer(l,2,gl.FLOAT,false,0,0);}
 
-const U=n=>gl.getUniformLocation(prog,n);
+function makeRT(w,h){
+  const tex=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,w,h,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  const fb=gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER,fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tex,0);
+  return {tex,fb,w,h};
+}
+function draw(p,target,uniforms){
+  gl.useProgram(p); bindQuad(p);
+  if(target){gl.bindFramebuffer(gl.FRAMEBUFFER,target.fb);gl.viewport(0,0,target.w,target.h);}
+  else{gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,cv.width,cv.height);}
+  let unit=0;
+  for(const k in uniforms){const v=uniforms[k],loc=p._u[k];if(loc==null)continue;
+    if(v&&v.tex!==undefined){gl.activeTexture(gl.TEXTURE0+unit);gl.bindTexture(gl.TEXTURE_2D,v.tex);gl.uniform1i(loc,unit);unit++;}
+    else if(Array.isArray(v)){({2:gl.uniform2fv,3:gl.uniform3fv,4:gl.uniform4fv})[v.length].call(gl,loc,v);}
+    else gl.uniform1f(loc,v);}
+  gl.drawArrays(gl.TRIANGLES,0,3);
+}
+
+// ---------- paleta real do oryzo (sRGB -> linear) ----------
 const srgb=h=>{const v=parseInt(h.slice(1),16);return [((v>>16)&255)/255,((v>>8)&255)/255,(v&255)/255]
   .map(c=>c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4));};
-gl.uniform3fv(U('c0'),srgb('#ff9cff'));
-gl.uniform3fv(U('c1'),srgb('#ff9638'));
-gl.uniform3fv(U('c2'),srgb('#ffff22'));
-gl.uniform3fv(U('c3'),srgb('#54ffff'));
+const C0=srgb('#ff9cff'),C1=srgb('#ff9638'),C2=srgb('#ffff22'),C3=srgb('#54ffff');
 
-let pulse=1, pulseCenter=[0.5,0.5], amount=1;
+// GLSL comum: paleta rotacionada (idêntico ao AppleEfx)
+const PAL = `
+uniform vec3 c0,c1,c2,c3;
+vec3 palette(vec2 uv, vec2 coverAspect, float t){
+  vec2 g=(uv-0.5)*coverAspect*2.; float a=t*-5.;
+  mat2 r=mat2(cos(a),-sin(a),sin(a),cos(a));
+  g=clamp(r*g*0.5+0.5,0.,1.);
+  vec3 cT=mix(c0,c1,g.x), cB=mix(c3,c2,g.x);
+  vec3 col=mix(cB,cT,g.y); return col*col*col*2.;
+}`;
+
+// ---------- 1) low: blur/downsample do paint ----------
+const pLow = prog(`
+in vec2 v_uv; out vec4 o; uniform sampler2D u_tex; uniform vec2 u_texel;
+void main(){ vec4 s=vec4(0.);
+  for(int x=-1;x<=1;x++)for(int y=-1;y<=1;y++) s+=texture(u_tex,v_uv+vec2(float(x),float(y))*u_texel);
+  o=s/9.; }`);
+
+// ---------- 2) paintSim: advecção + curl noise + dissipação (frag$g do bundle) ----------
+const pSim = prog(`
+in vec2 v_uv; out vec4 o;
+uniform sampler2D u_lowPaintTexture, u_prevPaintTexture;
+uniform vec2 u_paintTexelSize, u_vel; uniform vec4 u_drawFrom,u_drawTo;
+uniform float u_pushStrength, u_curlScale, u_curlStrength; uniform vec3 u_dissipations;
+vec2 sdSegment(vec2 p,vec2 a,vec2 b){vec2 pa=p-a,ba=b-a;float h=clamp(dot(pa,ba)/dot(ba,ba),0.,1.);return vec2(length(pa-ba*h),h);}
+vec2 hash(vec2 p){vec3 p3=fract(vec3(p.xyx)*vec3(.1031,.1030,.0973));p3+=dot(p3,p3.yzx+33.33);return fract((p3.xx+p3.yz)*p3.zy)*2.-1.;}
+vec3 noised(vec2 p){vec2 i=floor(p),f=fract(p);vec2 u=f*f*f*(f*(f*6.-15.)+10.);vec2 du=30.*f*f*(f*(f-2.)+1.);
+  vec2 ga=hash(i),gb=hash(i+vec2(1,0)),gc=hash(i+vec2(0,1)),gd=hash(i+vec2(1,1));
+  float va=dot(ga,f),vb=dot(gb,f-vec2(1,0)),vc=dot(gc,f-vec2(0,1)),vd=dot(gd,f-vec2(1,1));
+  return vec3(va+u.x*(vb-va)+u.y*(vc-va)+u.x*u.y*(va-vb-vc+vd),
+    ga+u.x*(gb-ga)+u.y*(gc-ga)+u.x*u.y*(ga-gb-gc+gd)+du*(u.yx*(va-vb-vc+vd)+vec2(vb,vc)-va));}
+void main(){
+  vec2 fc=gl_FragCoord.xy;
+  vec2 seg=sdSegment(fc,u_drawFrom.xy,u_drawTo.xy);
+  vec2 radiusWeight=mix(u_drawFrom.zw,u_drawTo.zw,seg.y);
+  float d=1.-smoothstep(-0.01,radiusWeight.x,seg.x);
+  vec4 lowData=texture(u_lowPaintTexture,v_uv);
+  vec2 velInv=(0.5-lowData.xy)*u_pushStrength;
+  vec3 n3=noised(fc*u_curlScale*(1.-lowData.xy));
+  vec2 n=noised(fc*u_curlScale*(2.-lowData.xy*(0.5+n3.x)+n3.yz*0.1)).yz;
+  velInv+=n*(lowData.z+lowData.w)*u_curlStrength;
+  vec4 data=texture(u_prevPaintTexture,v_uv+velInv*u_paintTexelSize);
+  data.xy-=0.5;
+  vec4 delta=(u_dissipations.xxyz-1.0)*data;
+  vec2 newVel=u_vel*d;
+  delta+=vec4(newVel,radiusWeight.yy*d);
+  delta.zw=sign(delta.zw)*max(vec2(0.004),abs(delta.zw));
+  data+=delta; data.xy+=0.5;
+  o=clamp(data,vec4(0.),vec4(1.));
+}`);
+
+// ---------- 3) scene: fundo + tinta colorida (paleta) onde há paint ----------
+const pScene = prog(PAL+`
+in vec2 v_uv; out vec4 o;
+uniform sampler2D u_paint; uniform vec2 u_coverAspect; uniform float u_time;
+void main(){
+  vec3 bg=vec3(0.063,0.035,0.016);                 // #100904 aprox
+  bg+=0.02*vec3(1.,0.6,0.3)*(1.-length(v_uv-0.5)); // leve brilho central
+  vec4 pd=texture(u_paint,v_uv);
+  float raw=(pd.z+pd.w)*0.5;
+  float dens=smoothstep(0.03,0.6,raw);      // núcleo só nas zonas bem densas
+  float wisp=smoothstep(0.01,0.25,raw);     // véu difuso (fumaça) nas bordas
+  vec3 ink=palette(v_uv,u_coverAspect,u_time);
+  vec3 col=bg + ink*wisp*0.45 + ink*dens*0.45;
+  o=vec4(col,1.);
+}`);
+
+// ---------- 4) distort: smear ao longo do fluxo + rgb shift (screenPaintDistortion) ----------
+const pDistort = prog(`
+in vec2 v_uv; out vec4 o;
+uniform sampler2D u_texture,u_screenPaintTexture; uniform vec2 u_screenPaintTexelSize;
+uniform float u_amount,u_rgbShift,u_multiplier,u_colorMultiplier,u_shade;
+void main(){
+  float bn=fract(sin(dot(gl_FragCoord.xy,vec2(12.9,78.2)))*43758.5)-0.5;
+  vec4 data=texture(u_screenPaintTexture,v_uv);
+  float weight=(data.z+data.w)*0.5;
+  vec2 vel=(0.5-data.xy-0.001)*2.*weight;
+  vec2 velocity=vel*u_amount/4.0*u_screenPaintTexelSize*u_multiplier;
+  vec2 uv=v_uv+bn*velocity; vec4 color=vec4(0.);
+  for(int i=0;i<9;i++){ color+=texture(u_texture,uv); uv+=velocity; }
+  color/=9.;
+  color.rgb+=sin(vec3(vel.x+vel.y)*40.0+vec3(0.,2.,4.)*u_rgbShift)*smoothstep(0.4,-0.9,weight)*u_shade*max(abs(vel.x),abs(vel.y))*u_colorMultiplier;
+  o=color;
+}`);
+
+// ---------- 5) border: AppleEfx fragmentShader$3 (verbatim na lógica) ----------
+const pBorder = prog(PAL+`
+in vec2 v_uv; out vec4 o;
+uniform sampler2D u_texture; uniform vec2 u_resolution,u_coverAspect,u_pulseCenter;
+uniform float u_time,u_amount,u_padding,u_pulse;
+float sdBox(vec2 p,vec2 b){vec2 d=abs(p)-b;return length(max(d,0.))+min(max(d.x,d.y),0.);}
+float linearstep(float a,float b,float x){return clamp((x-a)/(b-a),0.,1.);}
+void main(){
+  float bn=fract(sin(dot(gl_FragCoord.xy,vec2(12.9,78.2)))*43758.5);
+  vec2 aspect=vec2(u_resolution.x/u_resolution.y,1.);
+  vec3 glowColor=palette(v_uv,u_coverAspect,u_time);
+  vec2 wp=(v_uv-u_pulseCenter)*aspect; float wl=length(aspect);
+  float wpl=wl-length(wp), wsl=0.5*wl, wel=0.5*wl, wtl=wl+wsl+wel;
+  float wt=u_pulse*wtl-wl+wpl;
+  float w0=smoothstep(0.,wsl,wt), w1=smoothstep(wsl+wel,wsl,wt);
+  float wd=abs(wt-wsl); float wave=w0*w1*u_amount; vec2 waveDir=normalize(wp+1e-6);
+  vec2 borderUv=(v_uv-0.5)*u_resolution+waveDir*wave*0.01*u_resolution.x;
+  float d=sdBox(borderUv,u_resolution*0.5-u_padding*2.)-u_padding;
+  d=linearstep(0.,u_padding*2.5,d); d=pow(d,3.0);
+  float d2=sdBox(borderUv,u_resolution*0.5-u_padding*3.)-u_padding*1.5;
+  d2=linearstep(0.,u_padding*5.5,d2); d2=pow(d2,5.);
+  vec4 base=texture(u_texture,v_uv+waveDir*smoothstep(0.,0.4,abs(wd))*wave*-0.005);
+  vec3 color=pow(base.rgb,vec3(2.2));
+  float glow=(0.001+d+d2*0.5)*5.;
+  color+=u_amount*glowColor*glow;
+  color+=wave*(d*0.25+d2*0.25+glowColor*0.05);
+  color=min(color,1.);
+  o=vec4(pow(color,vec3(1.0/2.2))+bn*0.004,1.0);
+}`);
+
+// ---------- estado / RTs ----------
+let paint=[null,null], low=null, scene=null, distorted=null, sw=0,sh=0;
+const palU={c0:C0,c1:C1,c2:C2,c3:C3};
 function resize(){
-  const dpr=Math.min(devicePixelRatio,2);
-  cv.width=innerWidth*dpr; cv.height=innerHeight*dpr;
-  gl.viewport(0,0,cv.width,cv.height);
-  gl.uniform2f(U('u_resolution'),cv.width,cv.height);          // <- adapta à tela
-  gl.uniform1f(U('u_padding'),Math.min(cv.width,cv.height)*0.10);
+  const dpr=Math.min(devicePixelRatio||1,2);
+  cv.width=Math.floor(innerWidth*dpr); cv.height=Math.floor(innerHeight*dpr);
+  const pw=cv.width>>2, ph=cv.height>>2, lw=cv.width>>4, lh=cv.height>>4;
+  paint=[makeRT(pw,ph),makeRT(pw,ph)]; low=makeRT(lw,lh);
+  scene=makeRT(cv.width,cv.height); distorted=makeRT(cv.width,cv.height);
+  sw=pw; sh=ph;
+  // limpa paint para (.5,.5,0,0)
+  for(const t of [paint[0],paint[1],low]){gl.bindFramebuffer(gl.FRAMEBUFFER,t.fb);gl.clearColor(.5,.5,0,0);gl.clear(gl.COLOR_BUFFER_BIT);}
 }
 addEventListener('resize',resize); resize();
 
-addEventListener('pointermove',e=>{ pulseCenter=[e.clientX/innerWidth, 1-e.clientY/innerHeight]; });
-addEventListener('pointerdown',()=>{ pulse=0; });  // dispara a onda
+// coverAspect EXATO do AppleEfx.render()
+function coverAspect(){
+  const W=cv.width,H=cv.height;
+  const i=Math.min(H/W,1)/Math.sqrt(W*W+H*H)*Math.max(W,H);
+  return [W/H*i, i];
+}
 
-const t0=performance.now();
-(function loop(t){
-  gl.uniform1f(U('u_time'),(t-t0)/1000);
-  pulse=Math.min(1,pulse+0.012);
-  gl.uniform1f(U('u_pulse'),pulse);
-  gl.uniform2f(U('u_pulseCenter'),pulseCenter[0],pulseCenter[1]);
-  gl.uniform1f(U('u_amount'),amount);
-  gl.drawArrays(gl.TRIANGLES,0,3);
-  requestAnimationFrame(loop);
-})(t0);
+// ---------- input: pincel de tinta (drawFrom -> drawTo em pixels do buffer paint) ----------
+let mouse={x:.5,y:.5}, pmouse={x:.5,y:.5}, lastMove=-1e9, vel=[0,0];
+function setMouse(nx,ny){ pmouse={...mouse}; mouse={x:nx,y:ny}; lastMove=performance.now()/1000;
+  vel=[(mouse.x-pmouse.x), (mouse.y-pmouse.y)]; }
+addEventListener('pointermove',e=>setMouse(e.clientX/innerWidth, 1-e.clientY/innerHeight));
+
+// autoplay sutil quando ocioso (p/ ver a fumaça sem mouse)
+function autoplay(t){ if(t-lastMove<1.0) return;
+  const a=t*0.5; setMouse(0.5+0.36*Math.cos(a*1.3), 0.5+0.30*Math.sin(a*1.7)); }
+
+// ---------- loop ----------
+let pulse=1, amount=1, prevT=performance.now()/1000;
+function frame(now){
+  now/=1000; let dt=Math.min(now-prevT,0.05); prevT=now;
+  autoplay(now);
+
+  // pulse: nasce na borda DIREITA (1.001, scroll). pulse += dt*0.5
+  pulse=Math.min(1,pulse+dt*0.5);
+  const pc=[1.001, 0.5];
+
+  // 1) low
+  draw(pLow, low, {u_tex:paint[0], u_texel:[1/sw,1/sh]});
+
+  // 2) paint sim (ping-pong)
+  const speed=Math.hypot(vel[0],vel[1]);
+  const moving=(now-lastMove)<0.12 && speed>1e-4;
+  const fx=mouse.x*sw, fy=mouse.y*sh, px=pmouse.x*sw, py=pmouse.y*sh;
+  const radius=22, weight=moving?0.6:0.0;                 // maxRadius=100 /4; weight menor = mais fumaça
+  const uvel=[Math.max(-0.5,Math.min(0.5,vel[0]*5)), Math.max(-0.5,Math.min(0.5,vel[1]*5))];
+  draw(pSim, paint[1], {
+    u_lowPaintTexture:low, u_prevPaintTexture:paint[0],
+    u_paintTexelSize:[1/sw,1/sh],
+    u_drawFrom:[px,py,radius,weight], u_drawTo:[fx,fy,radius,weight],
+    u_vel:uvel, u_pushStrength:25, u_curlScale:0.06, u_curlStrength:1.75,
+    u_dissipations:[0.985,0.985,0.75],
+  });
+  paint.reverse();
+
+  const ca=coverAspect();
+  // 3) scene
+  draw(pScene, scene, {...palU, u_paint:paint[0], u_coverAspect:ca, u_time:now});
+  // 4) distort
+  draw(pDistort, distorted, {
+    u_texture:scene, u_screenPaintTexture:paint[0], u_screenPaintTexelSize:[1/sw,1/sh],
+    u_amount:amount, u_rgbShift:0.5, u_multiplier:1.0, u_colorMultiplier:8.0, u_shade:1.0,
+  });
+  // 5) border (na tela)
+  const padding=Math.min(50, Math.min(cv.width,cv.height)*0.1);
+  draw(pBorder, null, {...palU,
+    u_texture:distorted, u_resolution:[cv.width,cv.height], u_coverAspect:ca,
+    u_time:now, u_amount:amount, u_padding:padding, u_pulse:pulse, u_pulseCenter:pc,
+  });
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>
